@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "HarmonyOS Bluetooth PTP Touchpad Demo"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Virtual Bluetooth Precision Touchpad"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "TouchpadDemo"
+    },
+    {
+      "name": "bluetooth_permission_reason",
+      "value": "Used to register this device as a Bluetooth HID Precision Touchpad and connect to MatePad."
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+# HarmonyOS / DevEco Studio build & IDE artifacts
+.hvigor/
+.idea/
+.sign/
+oh_modules/
+oh-package-lock.json5
+build/
+entry/build/
+entry/.cxx/
+local.properties
+file:/
+
+# Release binaries & signing credentials (never commit signed artifacts or keys)
+release/
+*.hap
+*.hsp
+*.app
+*.har
+*.p12
+*.cer
+*.p7b
+*.jks
+*.keystore
+*.tar.gz
+*.zip
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+*.log

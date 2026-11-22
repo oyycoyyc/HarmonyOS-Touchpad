@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "鸿蒙蓝牙精密触控板 Demo"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "模拟蓝牙精密触控板控制 MatePad"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "触控板Demo"
+    },
+    {
+      "name": "bluetooth_permission_reason",
+      "value": "用于将本机注册为蓝牙 HID 触控板并与 MatePad 建立连接"
+    }
+  ]
+}
