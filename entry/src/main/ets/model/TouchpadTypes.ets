@@ -87,6 +87,9 @@ export interface EngineTickResult {
   pendingSwipeUpHoldMs: number;
   cancelPendingSwipeUpHold: boolean;
   appSwitching: boolean;
+  startInertia: boolean;
+  stopInertia: boolean;
+  inertiaActive: boolean;
 }
 
 export interface PairedHostDevice {
@@ -132,4 +135,15 @@ export interface HidSetReportRequest {
   kind: HidReportKind;
   reportId: number;
   data: Uint8Array;
+}
+
+export interface TouchpadSavedSettings {
+  mappingMode: MappingMode;
+  naturalScroll: boolean;
+  sensitivityIndex: number;
+  inertiaEnabled: boolean;
+  inertiaStrength: number;
+  edgeGuardEnabled: boolean;
+  isLandscapeMode: boolean;
+  showLogs: boolean;
 }

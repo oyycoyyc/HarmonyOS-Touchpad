@@ -5,6 +5,7 @@ const DOT_COLORS: Array<string> = ['#38BDF8', '#4ADE80', '#FBBF24', '#F472B6', '
 @Component
 export struct TouchpadSurfaceView {
   @Prop isFullScreenPad: boolean = false;
+  @Prop isLandscapeMode: boolean = false;
   @Prop connState: HidConnectionState = HidConnectionState.DISCONNECTED;
   @Prop mappingMode: MappingMode = MappingMode.MAC_THREE_FINGER_DRAG;
   @Prop gestureText: string = '';
@@ -12,6 +13,7 @@ export struct TouchpadSurfaceView {
   @Prop threeFingerDragging: boolean = false;
   @Prop threeFingerClutchPending: boolean = false;
   @Prop appSwitching: boolean = false;
+  @Prop inertiaActive: boolean = false;
   @Prop txPacketCount: number = 0;
   @Prop clickPadDown: boolean = false;
   @Prop visualDots: Array<VisualTouchDot> = [];
@@ -20,6 +22,7 @@ export struct TouchpadSurfaceView {
   onClickPadChanged: (pressed: boolean) => void = () => {};
   onRightClick: () => void = () => {};
   onExitFullScreen: () => void = () => {};
+  onToggleLandscape: () => void = () => {};
 
   private getDotColor(slotId: number): string {
     return DOT_COLORS[Math.abs(slotId) % DOT_COLORS.length];
@@ -34,6 +37,9 @@ export struct TouchpadSurfaceView {
     }
     if (this.threeFingerDragging) {
       return '#A855F7';
+    }
+    if (this.inertiaActive) {
+      return '#38BDF8';
     }
     return this.connState === HidConnectionState.CONNECTED ? '#0284C7' : '#334155';
   }
@@ -65,6 +71,14 @@ export struct TouchpadSurfaceView {
               .fontColor('#FFFFFF')
               .padding({ left: 10, right: 10, top: 3, bottom: 3 })
               .backgroundColor('#7C3AED')
+              .borderRadius(12)
+          } else if (this.inertiaActive) {
+            Text('轨迹球惯性滑行中 (触碰即停)')
+              .fontSize(12)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#FFFFFF')
+              .padding({ left: 10, right: 10, top: 3, bottom: 3 })
+              .backgroundColor('#0284C7')
               .borderRadius(12)
           }
 
@@ -111,6 +125,13 @@ export struct TouchpadSurfaceView {
               .fontSize(11)
               .fontColor('#94A3B8')
               .hitTestBehavior(HitTestMode.None)
+            Button(this.isLandscapeMode ? '竖屏' : '横屏')
+              .height(28)
+              .fontSize(11)
+              .backgroundColor('#0369A1')
+              .onClick(() => {
+                this.onToggleLandscape();
+              })
             Button('退出全屏')
               .height(28)
               .fontSize(11)
@@ -120,7 +141,7 @@ export struct TouchpadSurfaceView {
               })
           }
           .width('100%')
-          .padding({ top: 40, right: 16, left: 16 })
+          .padding({ top: this.isLandscapeMode ? 12 : 40, right: 16, left: this.isLandscapeMode ? 44 : 16 })
           .hitTestBehavior(HitTestMode.Transparent)
         }
       }

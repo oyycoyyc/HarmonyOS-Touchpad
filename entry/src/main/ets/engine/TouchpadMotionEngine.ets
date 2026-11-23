@@ -9,6 +9,7 @@ import {
   VisualTouchDot
 } from '../model/TouchpadTypes';
 import { ITouchpadActionMapper } from './ITouchpadActionMapper';
+import { PointerInertiaSimulator } from './PointerInertiaSimulator';
 
 const MAX_VISUAL_SLOTS: number = 5;
 const SINGLE_TAP_MAX_DURATION_MS: number = 180;
@@ -55,6 +56,7 @@ interface AcceleratedDelta {
 export class TouchpadMotionEngine {
   private fingers: Map<number, FingerState> = new Map<number, FingerState>();
   private mapper: ITouchpadActionMapper;
+  private inertiaSim: PointerInertiaSimulator = new PointerInertiaSimulator();
 
   // User-tunable feel parameters
   private pointerSensitivity: number = 2.15;
@@ -115,8 +117,47 @@ export class TouchpadMotionEngine {
     this.naturalScroll = natural;
   }
 
+  public setInertiaEnabled(enabled: boolean): void {
+    this.inertiaSim.setEnabled(enabled);
+  }
+
+  public setInertiaStrength(strengthPercent: number): void {
+    this.inertiaSim.setStrengthPercent(strengthPercent);
+  }
+
+  public stopInertia(): void {
+    this.inertiaSim.stop();
+  }
+
+  public isInertiaActive(): boolean {
+    return this.inertiaSim.isGliding();
+  }
+
+  public stepInertia(dtMs: number): EngineTickResult {
+    const res = this.inertiaSim.step(dtMs);
+    const actions: Array<TouchpadAction> = [];
+    if (res.dx !== 0 || res.dy !== 0) {
+      actions.push({
+        type: TouchpadActionType.POINTER_MOVE,
+        dx: res.dx,
+        dy: res.dy,
+        vScroll: 0,
+        hScroll: 0,
+        buttonMask: 0x00,
+        modifiers: 0,
+        keycode: 0,
+        label: '轨迹球惯性滑行'
+      });
+    }
+    if (!res.active) {
+      this.lastGestureSummary = '轨迹球滑行停止';
+    }
+    return this.buildTickResult(actions, 0, false, 0, false, 0, false, false, false);
+  }
+
   public reset(): void {
     this.fingers.clear();
+    this.inertiaSim.stop();
     this.sessionActive = false;
     this.peakFingerCount = 0;
     this.maxFingerMoveVp = 0;
@@ -206,8 +247,12 @@ export class TouchpadMotionEngine {
     let cancelPendingThreeFingerHold = false;
     let pendingSwipeUpHoldMs = 0;
     let cancelPendingSwipeUpHold = false;
+    let startInertia = false;
+    let stopInertia = false;
 
     if (snapshot.action === RawTouchAction.DOWN) {
+      this.inertiaSim.stop();
+      stopInertia = true;
       for (let i = 0; i < snapshot.changedTouches.length; i++) {
         const pt = snapshot.changedTouches[i];
         if (!this.fingers.has(pt.id)) {
@@ -397,7 +442,7 @@ export class TouchpadMotionEngine {
               this.anchorCentroid(true);
               if (activeCount === 1) {
                 this.singleFingerDeadzoneCleared = true;
-                this.handleSingleFingerMove(stepDx, stepDy, actions);
+                this.handleSingleFingerMove(stepDx, stepDy, now, actions);
               } else if (activeCount === 2) {
                 this.handleTwoFingerMove(stepDx, stepDy, actions);
               }
@@ -411,10 +456,10 @@ export class TouchpadMotionEngine {
             if (!this.singleFingerDeadzoneCleared) {
               if (this.maxFingerMoveVp >= SINGLE_FINGER_MOVE_DEADZONE_VP) {
                 this.singleFingerDeadzoneCleared = true;
-                this.handleSingleFingerMove(stepDx, stepDy, actions);
+                this.handleSingleFingerMove(stepDx, stepDy, now, actions);
               }
             } else {
-              this.handleSingleFingerMove(stepDx, stepDy, actions);
+              this.handleSingleFingerMove(stepDx, stepDy, now, actions);
             }
           } else if (activeCount === 2 && this.peakFingerCount <= 2) {
             this.handleTwoFingerMove(stepDx, stepDy, actions);
@@ -455,6 +500,7 @@ export class TouchpadMotionEngine {
         const fingers = this.peakFingerCount;
         const maxFingerMove = this.maxFingerMoveVp;
         const emittedScrollOrZoom = this.sessionEmittedScrollOrZoom;
+        const hadSingleMove = this.singleFingerDeadzoneCleared;
         const wasThreeFingerDrag = this.threeFingerDragging;
         const hadThreeFingerMoved = this.threeFingerMoved;
         const wasClutchResuming = this.clutchResuming;
@@ -502,8 +548,12 @@ export class TouchpadMotionEngine {
           this.lastGestureSummary = `${this.fingerLabel(fingers)}被系统手势打断 (Cancel)`;
         } else if (!wasMultiLatched && fingers === 1) {
           if (durationMs <= SINGLE_TAP_MAX_DURATION_MS && maxFingerMove <= SINGLE_TAP_MAX_MOVE_VP) {
+            this.inertiaSim.clearSamples();
             actions.push(this.makeClickAction(0x01, '单指轻点 → 鼠标左键'));
             this.lastGestureSummary = '单指轻点 → 鼠标左键';
+          } else if (hadSingleMove && this.inertiaSim.startGlide(now)) {
+            startInertia = true;
+            this.lastGestureSummary = '轨迹球惯性滑行中...';
           } else {
             this.lastGestureSummary = '单指移动完成';
           }
@@ -529,6 +579,10 @@ export class TouchpadMotionEngine {
             this.lastGestureSummary = `${this.fingerLabel(fingers)}操作完成`;
           }
         }
+
+        if (!startInertia) {
+          this.inertiaSim.clearSamples();
+        }
       }
     }
 
@@ -539,7 +593,9 @@ export class TouchpadMotionEngine {
       pendingThreeFingerHoldMs,
       cancelPendingThreeFingerHold,
       pendingSwipeUpHoldMs,
-      cancelPendingSwipeUpHold
+      cancelPendingSwipeUpHold,
+      startInertia,
+      stopInertia
     );
   }
 
@@ -556,9 +612,15 @@ export class TouchpadMotionEngine {
     return { dx: emitX, dy: emitY };
   }
 
-  private handleSingleFingerMove(stepDx: number, stepDy: number, actions: Array<TouchpadAction>): void {
+  private handleSingleFingerMove(
+    stepDx: number,
+    stepDy: number,
+    timestampMs: number,
+    actions: Array<TouchpadAction>
+  ): void {
     const delta = this.computeAcceleratedDelta(stepDx, stepDy, 1.0);
     if (delta.dx !== 0 || delta.dy !== 0) {
+      this.inertiaSim.recordSample(delta.dx, delta.dy, timestampMs);
       actions.push({
         type: TouchpadActionType.POINTER_MOVE,
         dx: delta.dx,
@@ -770,7 +832,9 @@ export class TouchpadMotionEngine {
     pendingThreeFingerHoldMs: number,
     cancelPendingThreeFingerHold: boolean,
     pendingSwipeUpHoldMs: number,
-    cancelPendingSwipeUpHold: boolean
+    cancelPendingSwipeUpHold: boolean,
+    startInertia: boolean = false,
+    stopInertia: boolean = false
   ): EngineTickResult {
     return {
       actions: actions,
@@ -785,7 +849,10 @@ export class TouchpadMotionEngine {
       cancelPendingThreeFingerHold: cancelPendingThreeFingerHold,
       pendingSwipeUpHoldMs: pendingSwipeUpHoldMs,
       cancelPendingSwipeUpHold: cancelPendingSwipeUpHold,
-      appSwitching: this.appSwitching
+      appSwitching: this.appSwitching,
+      startInertia: startInertia,
+      stopInertia: stopInertia,
+      inertiaActive: this.inertiaSim.isGliding()
     };
   }
 

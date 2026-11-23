@@ -3,6 +3,7 @@ import { LogEntry } from '../../model/TouchpadTypes';
 @Component
 export struct LogConsoleView {
   @Prop logs: Array<LogEntry> = [];
+  @Prop consoleHeight: number = 105;
   onClear: () => void = () => {};
 
   private resolveColor(level: string): string {
@@ -48,7 +49,7 @@ export struct LogConsoleView {
         }
         .width('100%')
       }
-      .height(105)
+      .height(this.consoleHeight)
       .width('100%')
     }
     .width('100%')

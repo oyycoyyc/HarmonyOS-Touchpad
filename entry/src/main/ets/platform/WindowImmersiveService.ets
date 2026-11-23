@@ -39,4 +39,29 @@ export class WindowImmersiveService {
       return `切换沉浸模式失败: ${e.code} ${e.message}`;
     }
   }
+
+  /**
+   * Switches between locked portrait and locked landscape orientation.
+   * window.Orientation.LANDSCAPE rotates clockwise 90 deg so the portrait top (earpiece/camera) is on the LEFT.
+   */
+  public async setLandscapeMode(context: common.UIAbilityContext, landscape: boolean): Promise<string> {
+    try {
+      const win: window.Window = await window.getLastWindow(context);
+      const target = landscape ? window.Orientation.LANDSCAPE : window.Orientation.PORTRAIT;
+      await win.setPreferredOrientation(target);
+      return '';
+    } catch (err) {
+      const e = err as BusinessError;
+      return `切换屏幕方向失败: ${e.code} ${e.message}`;
+    }
+  }
+
+  public async restoreDefaultOrientation(context: common.UIAbilityContext): Promise<void> {
+    try {
+      const win: window.Window = await window.getLastWindow(context);
+      await win.setPreferredOrientation(window.Orientation.UNSPECIFIED);
+    } catch (_ignored) {
+      // Ignore during ability teardown
+    }
+  }
 }

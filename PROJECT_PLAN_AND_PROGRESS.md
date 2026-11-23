@@ -1,6 +1,6 @@
 # HarmonyOS 模拟触控板项目 — 架构方案与进度记录
 
-> 最后更新：2026-11-21 23:23
+> 最后更新：2026-11-23
 
 ---
 
@@ -82,17 +82,18 @@ nova 15 Pro (ArkUI onTouch: touches + historicalPoints)
 - [x] **第三轮真机深度优化：12ms 经典蓝牙匀速发包节拍器与单包 `±36` 限幅消除偶发突然加速 + UI 刷新节流 + 电容跳点防护 + 4 档纯线性速度（`1.6 / 2.15 / 2.35 / 2.6`）+ 全面对齐鸿蒙电脑触控板手势（三指快上滑回桌面 / 上滑停顿 `220ms` 任务中心 / 下滑还原窗口 / 左右滑统一 `Alt+Tab` 且续滑与高亮框方向一致 / 四指轻点控制中心）+ 修复 Mac 模式四指异步抬手误触三指拖移**（已全部通过模拟测试、编译签名并归档至 `release/`，2026-11-21）
 - [x] **星闪（`@kit.NearLinkKit`）替代可行性核查**：直接核查 API 26.0.1 SDK 声明文件，确认纯软件平板零安装形态无法用星闪替代蓝牙 HID（详见 3.3 节，2026-11-21）
 - [x] **v1.0 文档收口与发行打包**：已完善逐文件架构文档（见 [README.md](file:///home/oyycoyyc/personal_works/harmony-touchpad/README.md) 第 4 节）并输出可安装签名 `.hap` 与干净源码归档包至 `/home/oyycoyyc/personal_works/harmony-touchpad/release/`（2026-11-21）
+- [x] **v0.1.2 发行定版（横屏模式、轨迹球惯性、配置持久化与 UI 精简）**：支持 `window.Orientation.LANDSCAPE`（竖屏顶部/听筒对应横屏左侧）及双栏横屏布局；新增纯领域 `PointerInertiaSimulator`（粘滞指数衰减 + 库仑干摩擦 + `5%~100%` 线性滑块，默认关闭 / `35%` + 落手即停）；新增 `@kit.ArkData` `preferences` 自动保存/恢复全部设置；隐藏快捷测试按钮与“纯鼠标兼容”入口（2026-11-23）
 
 ### 3.2 最终落地方案：经典蓝牙 HID `SUBCLASS_COMBO` 架构（2026-11-21 定版）
 - **蓝牙通道**：采用真机验证稳定可用的 `@ohos.bluetooth.hid`（经典蓝牙 `HidDeviceProfile`），`subclass` 设为 `hid.Subclass.SUBCLASS_COMBO (192)`（保留 `SUBCLASS_MOUSE (128)` 作为纯鼠标兼容兜底）。
 - **复合描述符（111B）**：
   - `Report ID 0x01`（5B）：3 键鼠标 + 相对 X/Y + 垂直滚轮 (`Wheel 0x38`) + 水平滚动 (`Consumer AC Pan 0x0238`)。
   - `Report ID 0x02`（8B）：标准 USB 键盘（1B 修饰键 + 1B 保留 + 6B 键码），支持 6 步错峰多修饰键时序、FIFO 键盘队列与粘滞 `Alt+Tab` 连续切换 3+ 应用（左/右滑统一唤起，续滑方向与屏幕高亮框一致）。
-- **核心引擎与体验收口（共 21 个 `.ets` 源码文件，完整逐文件职责表见 `README.md` 第 4 节）**：
-  - `TouchpadMotionEngine`（纯领域层，零框架/零定时器依赖）：纯线性光标缩放（档位 `低 1.6 / 中 2.15 / 快 2.35 / 高 2.6`）+ 亚像素余数累积 + 电容跳点防护 + 严格单指轻点（`<=5.5vp / <=180ms` + `2.0vp` 死区）+ 逐指独立位移双指右键 + 主轴稳定 2D 滚动 + 捏合缩放(`Ctrl+滚轮`) + Mac 三指拖移（`1:1` 齐平、1~3 指抗断触、四指异步抬手防降级误触、`320ms` 抬手续拖与单指轻点速放）+ 鸿蒙电脑原生 `220ms` 上滑停顿任务中心 / 快上滑显示桌面。
-  - `TouchpadController`（应用编排层）：集中托管 `12ms` 蓝牙匀速发包节拍器与单包 `±36` 平滑限幅拆包、连续移动 `40ms` UI 重绘节流、FIFO 键盘队列与 `220ms`/`320ms` 定时器。
-  - `HarmonyNativeActionMapper`（v0.1 默认，完整对齐鸿蒙电脑逻辑）与 `MacRemapActionMapper`（v0.2 一键热切换），共享纯常量文件 `model/HidKeyCodes.ets`，实现零跨层耦合。
-  - 窗口与交互：`WindowImmersiveService` 调用 `setGestureBackEnabled(false)` 禁用左右侧滑返回热区，配合 `Index.onBackPress()` 拦截误退出；移除 `HostDiagnosticsView` 冗余诊断页，保留 `LogConsoleView`；全屏模式 `退出全屏` 置于右上角安全区避开前置摄像头。
+- **核心引擎与体验收口（共 23 个 `.ets` 源码文件，完整逐文件职责表见 `README.md` 第 4 节）**：
+  - `TouchpadMotionEngine` & `PointerInertiaSimulator`（纯领域层，零框架/零定时器依赖）：纯线性光标缩放（档位 `低 1.6 / 中 2.15 / 快 2.35 / 高 2.6`）+ 亚像素余数累积 + 可选轨迹球惯性模拟（默认关闭，粘滞指数衰减 + 库仑干摩擦 + `5%~100%` 线性可调，默认 `35%`）+ 电容跳点防护 + 严格单指轻点（`<=5.5vp / <=180ms` + `2.0vp` 死区）+ 逐指独立位移双指右键 + 主轴稳定 2D 滚动 + 捏合缩放(`Ctrl+滚轮`) + Mac 三指拖移/原地长按 + 鸿蒙电脑原生 `220ms` 上滑停顿任务中心 / 快上滑显示桌面。
+  - `TouchpadController` & `TouchpadSettingsStore`（应用编排与系统能力隔离层）：集中托管 `12ms` 蓝牙匀速发包节拍器与单包 `±36` 平滑限幅拆包、`12ms` 轨迹球惯性定时器与落手即停逻辑、连续移动 `40ms` UI 重绘节流、FIFO 键盘队列与 `220ms`/`320ms` 定时器，并通过 `@kit.ArkData` `preferences` 自动持久化并恢复全部用户偏好。
+  - `HarmonyNativeActionMapper`（v0.1）与 `MacRemapActionMapper`（v0.2 默认），共享纯常量文件 `model/HidKeyCodes.ets`，实现零跨层耦合。
+  - 窗口与交互：`WindowImmersiveService` 支持锁定横屏（`window.Orientation.LANDSCAPE`，竖屏顶部/听筒在左）及 `setGestureBackEnabled(false)` 边缘防误触，配合 `Index.onBackPress()` 与非全屏双栏横屏布局；UI 精简隐藏快捷测试按钮与“纯鼠标兼容”入口，全屏模式右上浮窗避让前置摄像头并支持快速横竖屏切换。
 
 ### 3.3 星闪（`@kit.NearLinkKit`）替代可行性核查结论（2026-11-21）
 直接查阅本机 HarmonyOS API 26.0.1 SDK `@hms.nearlink.*` 全部 8 个接口文件（`advertising`、`scan`、`manager`、`remoteDevice`、`ssap`、`dataTransfer`、`constant`、`cdsm`）：
@@ -179,5 +180,5 @@ nova 15 Pro (ArkUI onTouch: touches + historicalPoints)
 
 ## 5. 当前状态与后续可选方向
 
-v1.0（含鸿蒙原生模式 + Mac 三指拖移与抬手续拖 + 交互式连续切应用 + 纯线性光标 + 边缘防误触）已双机真机验收通过并完成打包归档，交付物位于 `/home/oyycoyyc/personal_works/harmony-touchpad/release/`。  
+v0.1.2（`versionCode: 1000002`，含 Mac 三指拖移/原地长按 + 鸿蒙原生模式 + 横屏双栏模式 + 35% 默认轨迹球惯性滑块 + 配置自动持久化 + 精简 UI）已完成真机签名打包并归档至 `/home/oyycoyyc/personal_works/harmony-touchpad/release/harmony-touchpad-v0.1.2-signed.hap`。  
 后续如继续迭代，可优先考虑：**切回前台自动重注册并自动回连上次 MatePad**、或 **外接星闪 SLE 硬件桥接**。

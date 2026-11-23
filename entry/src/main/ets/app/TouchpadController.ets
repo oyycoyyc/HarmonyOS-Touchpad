@@ -17,6 +17,7 @@ import {
   RawTouchSnapshot,
   TouchpadAction,
   TouchpadActionType,
+  TouchpadSavedSettings,
   VisualTouchDot
 } from '../model/TouchpadTypes';
 import { ComboProtocolSession } from '../protocol/ComboProtocolSession';
@@ -38,6 +39,7 @@ const SENSITIVITY_PRESETS: Array<SensitivityPreset> = [
 const KEYBOARD_QUEUE_GAP_MS: number = 22;
 // Steady ~83Hz Classic BT HID mouse pacing prevents L2CAP packet clumping & OS dx/dt velocity spikes
 const MOUSE_SEND_MIN_INTERVAL_MS: number = 12;
+const INERTIA_TICK_MS: number = 12;
 // Smooth per-report delta cap prevents any coalesced frame jump from triggering OS pointer acceleration cliffs
 const MAX_MOUSE_DELTA_PER_REPORT: number = 36;
 // Throttle UI re-renders during continuous MOVE to ~25Hz so ArkUI layout/GC never stalls touch sampling
@@ -47,7 +49,11 @@ export interface TouchpadUiState {
   profileMode: HidProfileMode;
   mappingMode: MappingMode;
   naturalScroll: boolean;
+  sensitivityIndex: number;
   sensitivityLabel: string;
+  inertiaEnabled: boolean;
+  inertiaStrength: number;
+  inertiaActive: boolean;
   isRegistered: boolean;
   connState: HidConnectionState;
   connectedAddr: string;
@@ -84,6 +90,8 @@ export class TouchpadController {
   private dragReleaseTimerId: number = -1;
   private threeFingerHoldTimerId: number = -1;
   private swipeUpHoldTimerId: number = -1;
+  private inertiaTimerId: number = -1;
+  private lastInertiaTickMs: number = 0;
   private keyQueueTailMs: number = 0;
 
   // Smooth Classic BT mouse report pacer
@@ -100,7 +108,11 @@ export class TouchpadController {
     profileMode: HidProfileMode.COMBO_TOUCHPAD,
     mappingMode: MappingMode.MAC_THREE_FINGER_DRAG,
     naturalScroll: true,
+    sensitivityIndex: 1,
     sensitivityLabel: SENSITIVITY_PRESETS[1].label,
+    inertiaEnabled: false,
+    inertiaStrength: 35,
+    inertiaActive: false,
     isRegistered: false,
     connState: HidConnectionState.DISCONNECTED,
     connectedAddr: '',
@@ -163,6 +175,7 @@ export class TouchpadController {
     this.clearDragReleaseTimer();
     this.clearThreeFingerHoldTimer();
     this.clearSwipeUpHoldTimer();
+    this.clearInertiaTimer();
     this.clearMousePacer();
     this.engine.reset();
     this.state.profileMode = mode;
@@ -170,6 +183,7 @@ export class TouchpadController {
     this.state.threeFingerDragging = false;
     this.state.threeFingerClutchPending = false;
     this.state.appSwitching = false;
+    this.state.inertiaActive = false;
     this.emitState(true);
     this.transport.register(config);
   }
@@ -217,9 +231,79 @@ export class TouchpadController {
   public cycleSensitivity(): void {
     this.sensitivityIndex = (this.sensitivityIndex + 1) % SENSITIVITY_PRESETS.length;
     const preset = SENSITIVITY_PRESETS[this.sensitivityIndex];
+    this.state.sensitivityIndex = this.sensitivityIndex;
     this.state.sensitivityLabel = preset.label;
     this.engine.setPointerSensitivity(preset.gain);
     this.appendLog('INFO', `光标灵敏度已调整为: ${preset.label}`);
+    this.emitState(true);
+  }
+
+  public applySavedSettings(settings: TouchpadSavedSettings): void {
+    const mapper = this.mappers.get(settings.mappingMode);
+    if (mapper) {
+      this.engine.setMapper(mapper);
+      this.state.mappingMode = settings.mappingMode;
+    }
+
+    this.state.naturalScroll = settings.naturalScroll;
+    this.engine.setNaturalScroll(settings.naturalScroll);
+
+    const sensIdx = this.clampInt(settings.sensitivityIndex, 0, SENSITIVITY_PRESETS.length - 1);
+    this.sensitivityIndex = sensIdx;
+    this.state.sensitivityIndex = sensIdx;
+    const preset = SENSITIVITY_PRESETS[sensIdx];
+    this.state.sensitivityLabel = preset.label;
+    this.engine.setPointerSensitivity(preset.gain);
+
+    const strength = this.clampInt(settings.inertiaStrength, 5, 100);
+    this.state.inertiaStrength = strength;
+    this.engine.setInertiaStrength(strength);
+
+    this.state.inertiaEnabled = settings.inertiaEnabled;
+    this.engine.setInertiaEnabled(settings.inertiaEnabled);
+    if (!settings.inertiaEnabled) {
+      this.clearInertiaTimer();
+      this.state.inertiaActive = false;
+    }
+
+    this.emitState(true);
+  }
+
+  public toggleInertiaEnabled(): void {
+    const next = !this.state.inertiaEnabled;
+    this.state.inertiaEnabled = next;
+    this.engine.setInertiaEnabled(next);
+    if (!next) {
+      this.clearInertiaTimer();
+      this.state.inertiaActive = false;
+    }
+    this.appendLog('INFO', `轨迹球鼠标惯性: ${next ? `开启 (${this.state.inertiaStrength}%)` : '关闭'}`);
+    this.emitState(true);
+  }
+
+  public setInertiaStrength(strengthPercent: number, logChange: boolean): void {
+    const clamped = this.clampInt(strengthPercent, 5, 100);
+    this.state.inertiaStrength = clamped;
+    this.engine.setInertiaStrength(clamped);
+    if (logChange) {
+      this.appendLog('INFO', `轨迹球惯性强度已调整为: ${clamped}%`);
+    }
+    this.emitState(true);
+  }
+
+  private clampInt(value: number, min: number, max: number): number {
+    const rounded = Math.round(value);
+    if (rounded < min) {
+      return min;
+    }
+    if (rounded > max) {
+      return max;
+    }
+    return rounded;
+  }
+
+  public cancelActiveSession(): void {
+    this.releaseAnyHeldInputs();
     this.emitState(true);
   }
 
@@ -230,6 +314,9 @@ export class TouchpadController {
   }
 
   public setClickPadPressed(pressed: boolean): void {
+    this.clearInertiaTimer();
+    this.engine.stopInertia();
+    this.state.inertiaActive = false;
     this.flushPendingMouseMoveNow();
     this.state.clickPadDown = pressed;
     const action: TouchpadAction = {
@@ -254,6 +341,9 @@ export class TouchpadController {
       this.appendLog('WARN', '未连接 MatePad，无法发送点击');
       return;
     }
+    this.clearInertiaTimer();
+    this.engine.stopInertia();
+    this.state.inertiaActive = false;
     this.flushPendingMouseMoveNow();
     const action: TouchpadAction = {
       type: TouchpadActionType.MOUSE_CLICK,
@@ -301,11 +391,16 @@ export class TouchpadController {
     if (tick.cancelPendingSwipeUpHold) {
       this.clearSwipeUpHoldTimer();
     }
+    if (tick.stopInertia) {
+      this.clearInertiaTimer();
+      this.clearMousePacer();
+    }
 
     const modeVisualChanged =
       this.state.threeFingerDragging !== tick.threeFingerDragging ||
       this.state.threeFingerClutchPending !== tick.threeFingerClutchPending ||
       this.state.appSwitching !== tick.appSwitching ||
+      this.state.inertiaActive !== tick.inertiaActive ||
       this.state.fingerCountNow !== tick.activeFingerCount;
 
     this.state.visualDots = tick.visualDots;
@@ -314,6 +409,7 @@ export class TouchpadController {
     this.state.threeFingerDragging = tick.threeFingerDragging;
     this.state.threeFingerClutchPending = tick.threeFingerClutchPending;
     this.state.appSwitching = tick.appSwitching;
+    this.state.inertiaActive = tick.inertiaActive;
 
     let hasDiscreteAction = false;
     for (let i = 0; i < tick.actions.length; i++) {
@@ -342,6 +438,10 @@ export class TouchpadController {
     }
     if (tick.pendingSwipeUpHoldMs > 0) {
       this.scheduleSwipeUpHold(tick.pendingSwipeUpHoldMs);
+    }
+    if (tick.startInertia && !this.state.clickPadDown) {
+      this.flushPendingMouseMoveNow();
+      this.startInertiaLoop();
     }
 
     this.emitState(forceUiEmit || modeVisualChanged || hasDiscreteAction || tick.pendingSwipeUpHoldMs > 0);
@@ -492,10 +592,73 @@ export class TouchpadController {
     }
   }
 
+  private startInertiaLoop(): void {
+    this.clearInertiaTimer();
+    if (!this.state.inertiaEnabled || !this.engine.isInertiaActive()) {
+      this.state.inertiaActive = false;
+      return;
+    }
+    this.lastInertiaTickMs = Date.now();
+    this.scheduleNextInertiaTick();
+  }
+
+  private scheduleNextInertiaTick(): void {
+    this.clearInertiaTimer();
+    this.inertiaTimerId = setTimeout(() => {
+      this.inertiaTimerId = -1;
+      this.onInertiaTick();
+    }, INERTIA_TICK_MS);
+  }
+
+  private onInertiaTick(): void {
+    if (!this.state.inertiaEnabled || this.state.clickPadDown) {
+      this.engine.stopInertia();
+      this.state.inertiaActive = false;
+      this.emitState(true);
+      return;
+    }
+    const now = Date.now();
+    const dtMs = Math.max(8, Math.min(30, now - this.lastInertiaTickMs));
+    this.lastInertiaTickMs = now;
+
+    const tick = this.engine.stepInertia(dtMs);
+    if (this.state.connState === HidConnectionState.CONNECTED) {
+      for (let i = 0; i < tick.actions.length; i++) {
+        const action = tick.actions[i];
+        if (action.type === TouchpadActionType.POINTER_MOVE) {
+          const packets = this.protocol.encodeAction(action);
+          for (let j = 0; j < packets.length; j++) {
+            if (this.transport.sendInputReport(packets[j].reportId, packets[j].payload)) {
+              this.state.txPacketCount++;
+            }
+          }
+          this.lastMouseSendMs = Date.now();
+        }
+      }
+    }
+
+    this.state.inertiaActive = tick.inertiaActive;
+    this.state.gestureText = tick.gestureSummary;
+    if (tick.inertiaActive) {
+      this.scheduleNextInertiaTick();
+      this.emitState(false);
+    } else {
+      this.emitState(true);
+    }
+  }
+
+  private clearInertiaTimer(): void {
+    if (this.inertiaTimerId !== -1) {
+      clearTimeout(this.inertiaTimerId);
+      this.inertiaTimerId = -1;
+    }
+  }
+
   private releaseAnyHeldInputs(): void {
     this.clearDragReleaseTimer();
     this.clearThreeFingerHoldTimer();
     this.clearSwipeUpHoldTimer();
+    this.clearInertiaTimer();
     this.clearMousePacer();
     this.engine.reset();
     if (this.state.connState === HidConnectionState.CONNECTED) {
@@ -509,6 +672,7 @@ export class TouchpadController {
     this.state.threeFingerDragging = false;
     this.state.threeFingerClutchPending = false;
     this.state.appSwitching = false;
+    this.state.inertiaActive = false;
     this.state.clickPadDown = false;
     this.state.visualDots = [];
     this.state.fingerCountNow = 0;
@@ -588,6 +752,7 @@ export class TouchpadController {
           this.clearDragReleaseTimer();
           this.clearThreeFingerHoldTimer();
           this.clearSwipeUpHoldTimer();
+          this.clearInertiaTimer();
           this.clearMousePacer();
           this.engine.reset();
           this.protocol.resetHeldState();
@@ -595,6 +760,7 @@ export class TouchpadController {
           this.state.threeFingerDragging = false;
           this.state.threeFingerClutchPending = false;
           this.state.appSwitching = false;
+          this.state.inertiaActive = false;
           this.state.clickPadDown = false;
           this.state.visualDots = [];
           this.state.fingerCountNow = 0;
@@ -668,7 +834,11 @@ export class TouchpadController {
       profileMode: this.state.profileMode,
       mappingMode: this.state.mappingMode,
       naturalScroll: this.state.naturalScroll,
+      sensitivityIndex: this.state.sensitivityIndex,
       sensitivityLabel: this.state.sensitivityLabel,
+      inertiaEnabled: this.state.inertiaEnabled,
+      inertiaStrength: this.state.inertiaStrength,
+      inertiaActive: this.state.inertiaActive,
       isRegistered: this.state.isRegistered,
       connState: this.state.connState,
       connectedAddr: this.state.connectedAddr,
